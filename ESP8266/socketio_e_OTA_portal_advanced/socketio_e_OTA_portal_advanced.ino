@@ -1,3 +1,5 @@
+//kurokaji
+
 #include <Arduino.h>
 
 #include <ESP8266WiFi.h>
@@ -5,7 +7,7 @@
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-// End OTA libraries
+// End: OTA libraries
 #include <ESP8266WiFiMulti.h>
 
 #include <ArduinoJson.h>
@@ -65,6 +67,8 @@ bool isArray(const T& ) {
 #define PORTAL_FECHADO_PIN D6
 #define PORTAL_FECHOU_LAST_DIR false
 #define PORTAL_ABRIU_LAST_DIR true
+#define TOO_LOW_DISPLACEMENT "o deslocamento solicitado eh muito proximo a posicao atual do portal"
+#define NEGATIVE_ABSOLUTE_DISPLACEMENT "o valor de um deslocamento absoluto nao pode ser negativo"
 
 #define REGAR_HORTA "regar"
 #define REGA_INICIADA "rega iniciada"
@@ -93,11 +97,15 @@ boolean portal_last_dir = PORTAL_FECHOU_LAST_DIR;
 boolean portal_dir_shift_lock = false;
 boolean portal_static = false;
 
-// A fazer: Begin
+// Portal_Act_Watchdog: Begin
 boolean portal_act_time_recalc_eligible = false;
 unsigned long portal_total_time = 10000;
+unsigned long portal_curr_time = 0;
 float portal_act_percentage = 1.0;
-// A fazer: End
+unsigned long portal_curr_displ = 0;
+float portal_displ_threshold = 0.1;
+boolean portal_act_watchdog_on = false; // Indica ao portalLoop() se ele deve monitorar o tempo de percurso do portal para acionar quando chegar no tempo pré-definido
+// Portal_Act_Watchdog: End
 
 const char* hora_rega = "15:45 de hoje";
 boolean is_torneira_open = false;
@@ -133,6 +141,23 @@ void checkPortalState() {
     else { is_portal_closed = false; is_portal_open = false; }
   }
 }
+
+//Portal_Act_Watchdog: Begin
+void portalActWatchdog() {
+  if(portal_act_percentage < 1.0) {
+    //if(is_portalportal_curr_displ portal_total_time
+  }
+boolean portal_act_time_recalc_eligible = false;
+unsigned long portal_total_time_displ = 10000;
+unsigned long portal_curr_time_displ = 0;
+unsigned long portal_desired_time_displ = 3.5;
+float portal_displ_percentage_threshold = 0.1;
+float portal_act_percentage = 1.0;
+boolean portal_act_watchdog_on = false;
+  
+}
+//Portal_Act_Watchdog: End
+
 const char* portalState() {
   //checkPortalState();
   if(portal_changed)
@@ -150,32 +175,72 @@ const char* portalState() {
   return PORTAL_PARCIAL;
 }
 
-const char* portalInteract(const char* state = _DEFAULT) {
-  if(!strcmp(state,ABRIR_PORTAL)) {
-    openPortal();
-  } else if(!strcmp(state,FECHAR_PORTAL)) {
-    closePortal();
-  } else if(strcmp(state,_DEFAULT)) return "valor invalido para portal"; 
+//Portal_Act_Dealer: Begin
+const char* portalInteract(const char* action, JsonObject& action_options) {
+  const char* displ_reference;
+  if(action_options["reference"]) displ_reference = action_options["reference"]; else displ_reference = "absolute";
+  const char* displ_amount;
+  if(action_options["amount"]) displ_amount = action_options["amount"]; else displ_amount = "1.0";
+  portal_act_percentage = strtof(displ_amount, NULL);
+  if(portal_act_percentage > 1.0) portal_act_percentage = 1.0;
+  else if(portal_act_percentage < -1.0 && displ_reference == "relative") portal_act_percentage = -1.0;
+  else if(portal_act_percentage < 0.0 && displ_reference == "absolute") portal_act_percentage = 0.0;
+  if(!strcmp(displ_reference,"relative")) {
+    if( portal_act_percentage < portal_displ_percentage_threshold ) return TOO_LOW_DISPLACEMENT;
+    portal_desired_time_displ = portal_curr_time_displ;
+    if(!strcmp(action,ABRIR_PORTAL)) portal_desired_time_displ += portal_act_percentage * portal_total_time_displ;
+    else if(!strcmp(action,FECHAR_PORTAL)) portal_desired_time_displ -= portal_act_percentage * portal_total_time_displ;
+  } else if(!strcmp(displ_reference,"absolute")) {
+    if(portal_act_percentage < 0.0) return NEGATIVE_ABSOLUTE_DISPLACEMENT;
+    float curr_percentage = portal_curr_time_displ / portal_total_time_displ;
+    if(!strcmp(action,ABRIR_PORTAL)) {
+      if( abs(portal_act_percentage - curr_percentage) < portal_displ_percentage_threshold ) return TOO_LOW_DISPLACEMENT;
+      portal_desired_time_displ = portal_act_percentage * portal_total_time_displ;
+    } else if(!strcmp(action,FECHAR_PORTAL)) {
+      if( abs( ( 1.0 - portal_act_percentage ) - curr_percentage) < portal_displ_percentage_threshold ) return TOO_LOW_DISPLACEMENT;
+      portal_desired_time_displ = ( 1.0 - portal_act_percentage ) * portal_total_time_displ;
+    }
+  }
+  if( portal_desired_time_displ < portal_displ_percentage_threshold * portal_total_time_displ ) portal_desired_time_displ = 0;
+  else if( portal_desired_time_displ > ( 1 - portal_displ_percentage_threshold * portal_total_time_displ ) ) portal_desired_time_displ = portal_total_time_displ;
+  if(!strcmp(action,ABRIR_PORTAL)) {
+    openPortal(action_options);
+  } else if(!strcmp(action,FECHAR_PORTAL)) {
+    closePortal(action_options);
+  } else if(strcmp(action,_DEFAULT)) return "valor invalido para portal"; 
   return portalState();
 }
+//Portal_Act_Dealer: End
+/*
+const char* portalInteract(const char* action, JsonObject& action_options) {
+  if(!strcmp(action,ABRIR_PORTAL)) {
+    openPortal(action_options);
+  } else if(!strcmp(action,FECHAR_PORTAL)) {
+    closePortal(action_options);
+  } else if(strcmp(action,_DEFAULT)) return "valor invalido para portal"; 
+  return portalState();
+}
+*/
+
 boolean portalActTimeThreshold() {
   if(millis() - portal_command_time > portal_min_command_time) { portal_act_time_threshold_reached = true; return true; }
   portal_act_time_threshold_reached = false;
   return false;
 }
-boolean openPortal() {
+boolean openPortal(JsonObject& action_options) {
   if(is_portal_opening || is_portal_open)
     return true;
-  if(!portalActTimeThreshold() || portal_dir_shift_lock)
+  if(!portalActTimeThreshold())
     return false;
   if(is_portal_closing) { is_portal_closing = false; portal_changed = true; }
   is_portal_opening = true;
   portal_changed = true;
   checkPortalState();
-  acionarPortal();
+  if(portal_dir_shift_lock && !portal_static) { portal_dir_shift_lock = false; return true; }
+  acionarPortal(action_options);
   return true;
 }
-boolean closePortal() {
+boolean closePortal(JsonObject& action_options) {
   if(is_portal_closing || is_portal_closed)
     return true;
   if(!portalActTimeThreshold() || portal_dir_shift_lock)
@@ -184,10 +249,11 @@ boolean closePortal() {
   is_portal_closing = true;
   portal_changed = true;
   checkPortalState();
-  acionarPortal();
+  if(portal_dir_shift_lock && !portal_static) { portal_dir_shift_lock = false; return true; }
+  acionarPortal(action_options);
   return true;
 }
-void acionarPortal() { // Cuidado: essa função só pode ser chamada quando os requisitos forem cumpridos (portalActTimeThreshold() retorna true)
+void acionarPortal(JsonObject& action_options) { // Cuidado: essa função só pode ser chamada quando os requisitos forem cumpridos (portalActTimeThreshold() retorna true)
   if(portal_static) {
     portal_static = false;
     if(portal_last_dir == PORTAL_FECHOU_LAST_DIR)
@@ -196,8 +262,9 @@ void acionarPortal() { // Cuidado: essa função só pode ser chamada quando os 
       portal_last_dir = PORTAL_FECHOU_LAST_DIR;
     if(portal_dir_shift_lock) portal_dir_shift_lock = false;
   } else portal_static = true;
-  if( ( is_portal_opening && portal_last_dir == PORTAL_ABRIU_LAST_DIR ) || ( is_portal_closing && portal_last_dir == PORTAL_FECHOU_LAST_DIR ) )
+  if( ( is_portal_opening && portal_last_dir == PORTAL_FECHOU_LAST_DIR ) || ( is_portal_closing && portal_last_dir == PORTAL_ABRIU_LAST_DIR ) )
     portal_dir_shift_lock = true;
+  if( portal_desired_time_displ > 0 && portal_desired_time_displ < portal_total_time_displ ) portal_act_watchdog_on = true; else portal_act_watchdog_on = false;
   portal_command_time = millis();
   digitalWrite(PORTAL_PIN, HIGH);
   delay(500);
@@ -208,6 +275,7 @@ void portalLoop() {
   if(portal_changed) postMessage(portalState());
   portal_changed = false;
   if(portal_dir_shift_lock && portalActTimeThreshold()) acionarPortal();
+  if(portal_act_watchdog_on) portalActWatchdog();
 }
 
 
@@ -259,16 +327,16 @@ const char* unsLongToCharPointer(unsigned long number) {
   ultoa(number, opa, 10);
   return opa;
 }*/
-const char* hortaInteract(const char* state = _DEFAULT) {
-  if(!strcmp(state,REGAR_HORTA)) {
+const char* hortaInteract(const char* action, JsonObject& action_options) {
+  if(!strcmp(action,REGAR_HORTA)) {
     if(regarHorta()) return REGA_INICIADA;
     else return REGANDO_HORTA;
-  } else if(!strcmp(state,FECHAR_TORNEIRA)) {
+  } else if(!strcmp(action,FECHAR_TORNEIRA)) {
     if(terminarRega()) return REGA_FINALIZADA;
     else return TORNEIRA_FECHADA;
-  } else if(!strcmp(state,_DEFAULT)) { return hortaState();
+  } else if(!strcmp(action,_DEFAULT)) { return hortaState();
   } else {
-    if(regarHorta(state)) return REGA_INICIADA,", regando por 20 s";//,unsLongToCharPointer(rega_time);
+    if(regarHorta(action)) return REGA_INICIADA,", regando por 20 s";//,unsLongToCharPointer(rega_time);
     else return REGANDO_HORTA;
   }
   return "valor invalido para horta";
@@ -414,16 +482,27 @@ void socketIOEvent(socketIOmessageType_t type, uint8_t * payload, size_t length)
               JsonObject data = doc[1];
               int user_id = data["user_id"];
               int target_user_id = data["target_user_id"];
-              JsonObject action = data["action"];
-              const char* portal;
-              const char* horta;
-              if(action["portal"]) portal = action["portal"]; else portal = "invalid";
-              if(action["horta"]) horta = action["horta"]; else horta = "invalid";
+              JsonObject object = data["object"];
+              JsonObject horta;
+              JsonObject portal;
+              if(object["horta"]) { horta = object["horta"]; }
+              if(object["portal"]) { portal = object["portal"]; }
+              /*JsonObject action = data["action"];
+              JsonObject action_detail = data["action_detail"];
+              */
+              const char* portal_action;
+              const char* horta_action;
+              if(portal["action"]) portal_action = portal["action"]; else portal_action = "invalid";
+              if(horta["action"]) horta_action = horta["action"]; else horta_action = "invalid";
+              JsonObject portal_action_options;
+              JsonObject horta_action_options;
+              if(portal["options"]) portal_action_options = portal["options"]; /*else portal_action_options = "";*/
+              if(horta["options"]) horta_action_options = horta["options"]; /*else horta_action_options = "";*/
               /*if(portal != undefined) {
                 if(portal == "abrir"
               }*/
-              if(horta != "invalid") { postMessage(hortaInteract(horta)); torneira_just_closed = false; }
-              if(portal != "invalid") { postMessage(portalInteract(portal)); portal_changed = false; }
+              if(horta_action != "invalid") { postMessage(hortaInteract(horta_action, horta_action_options)); torneira_just_closed = false; }
+              if(portal_action != "invalid") { postMessage(portalInteract(portal_action, portal_action_options)); portal_changed = false; }
               /*
               const char* current_host;
               int n_hosts = sizeof(doc["host"]);
@@ -701,7 +780,7 @@ char json[f.size()];
     if(i == n_hosts) {
       USE_SERIAL.println("Couldn't connect to any of the hosts listed.");
     }
-  }
+  } y
     socketIO.begin(current_host, atoi(port));
     //socketIO.begin("192.168.0.100", 3030);
     // event handler
