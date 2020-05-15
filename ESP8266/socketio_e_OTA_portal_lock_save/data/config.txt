@@ -1,0 +1,8 @@
+{
+  "ssid": "Klein_Net",
+  "pass": "Beterrabas012",
+  "host": ["192.168.0.100","192.168.0.101"],
+  "port": "3030",
+  "device": "ESP_Garagem",
+  "devpwd": "admin"
+}
